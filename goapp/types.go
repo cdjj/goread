@@ -17,10 +17,13 @@
 package goapp
 
 import (
+	"encoding/base64"
+	"net/url"
 	"time"
 
 	"appengine"
 	"appengine/datastore"
+	"appengine/taskqueue"
 )
 
 type User struct {
@@ -58,6 +61,32 @@ type Feed struct {
 	Link       string    `datastore:"l,noindex"`
 	Errors     int       `datastore:"e,noindex"`
 	Image      string    `datastore:"i,noindex"`
+	Subscribed time.Time `datastore:"s,noindex"`
+}
+
+func (f Feed) Subscribe(c appengine.Context) {
+	if !f.IsSubscribed() {
+		t := taskqueue.NewPOSTTask(routeUrl("subscribe-feed"), url.Values{
+			"feed": {f.Url},
+		})
+		if _, err := taskqueue.Add(c, t, "update-manual"); err != nil {
+			c.Errorf("taskqueue error: %v", err.Error())
+		} else {
+			c.Warningf("subscribe feed: %v", f.Url)
+		}
+	}
+}
+
+func (f Feed) IsSubscribed() bool {
+	return !ENABLE_PUBSUBHUBBUB || time.Now().Before(f.Subscribed)
+}
+
+func (f Feed) PubSubURL() string {
+	b := base64.URLEncoding.EncodeToString([]byte(f.Url))
+	ru, _ := router.Get("subscribe-callback").URL("feed", b)
+	ru.Scheme = "http"
+	ru.Host = PUBSUBHUBBUB_HOST
+	return ru.String()
 }
 
 // parent: Feed, key: story ID

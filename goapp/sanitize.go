@@ -21,16 +21,19 @@ import (
 	"code.google.com/p/go.net/html"
 	"code.google.com/p/go.net/html/atom"
 	"io"
+	"net/url"
 	"regexp"
 	"strings"
 )
 
-func Sanitize(s string) (string, string) {
+func Sanitize(s string, u *url.URL) (string, string) {
 	r := bytes.NewReader([]byte(s))
 	z := html.NewTokenizer(r)
 	buf := &bytes.Buffer{}
 	snip := &bytes.Buffer{}
 	scripts := 0
+	u.RawQuery = ""
+	u.Fragment = ""
 	for {
 		if z.Next() == html.ErrorToken {
 			if err := z.Err(); err == io.EOF {
@@ -46,6 +49,37 @@ func Sanitize(s string) (string, string) {
 			} else if t.Type == html.EndTagToken {
 				scripts--
 			}
+		} else if t.Type != html.EndTagToken && (t.DataAtom == atom.A || t.DataAtom == atom.Img) {
+			hasTarget := false
+			var attrs []html.Attribute
+			for _, a := range t.Attr {
+				if strings.HasPrefix(a.Key, "on") {
+					continue
+				}
+				if a.Key == "href" || a.Key == "src" {
+					if au, auerr := u.Parse(a.Val); auerr == nil {
+						if au.Scheme == "javascript" {
+							a.Val = "#"
+						} else {
+							a.Val = au.String()
+						}
+					} else {
+						a.Val = "#"
+					}
+				} else if a.Key == "target" {
+					hasTarget = true
+					a.Val = "_blank"
+				}
+				attrs = append(attrs, a)
+			}
+			if t.DataAtom == atom.A && !hasTarget {
+				attrs = append(attrs, html.Attribute{
+					Key: "target",
+					Val: "_blank",
+				})
+			}
+			t.Attr = attrs
+			buf.WriteString(t.String())
 		} else if scripts == 0 {
 			buf.WriteString(t.String())
 			if t.Type == html.TextToken {
@@ -72,5 +106,5 @@ func snipper(s string) string {
 	if i != -1 {
 		return s[:i]
 	}
-	return s
+	return cleanNonUTF8(s)
 }

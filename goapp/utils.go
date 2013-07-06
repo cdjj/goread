@@ -19,8 +19,8 @@ package goapp
 import (
 	"bytes"
 	"encoding/xml"
-	"errors"
 	"fmt"
+	"goapp/atom"
 	"html"
 	"html/template"
 	"image"
@@ -41,7 +41,6 @@ import (
 	"appengine/user"
 	"code.google.com/p/go-charset/charset"
 	_ "code.google.com/p/go-charset/data"
-	"code.google.com/p/rsc/blog/atom"
 	mpg "github.com/MiniProfiler/go/miniprofiler_gae"
 	"github.com/mjibson/goon"
 	"github.com/mjibson/rssgo"
@@ -154,13 +153,18 @@ var dateFormats = []string{
 	"02 Jan 2006 15:04:05 UT",
 	"02 Jan 2006",
 	"02-01-2006 15:04:05 MST",
+	"02.01.2006 -0700",
 	"02.01.2006 15:04:05",
 	"02/01/2006 15:04:05",
+	"02/01/2006",
+	"06-1-2 15:04",
+	"06/1/2 15:04",
 	"1/2/2006 15:04:05 MST",
 	"1/2/2006 3:04:05 PM",
+	"15:04 02.01.2006 -0700",
 	"2 Jan 2006 15:04:05 MST",
-	"2 January 2006 15:04:05 -0700",
 	"2 Jan 2006",
+	"2 January 2006 15:04:05 -0700",
 	"2 January 2006",
 	"2006 January 02",
 	"2006-01-02 00:00:00.0 15:04:05.0 -0700",
@@ -168,6 +172,7 @@ var dateFormats = []string{
 	"2006-01-02 15:04:05 -0700",
 	"2006-01-02 15:04:05 MST",
 	"2006-01-02 15:04:05-07:00",
+	"2006-01-02 15:04:05Z",
 	"2006-01-02",
 	"2006-01-02T15:04-07:00",
 	"2006-01-02T15:04:05 -0700",
@@ -176,22 +181,29 @@ var dateFormats = []string{
 	"2006-01-02T15:04:05-07:00",
 	"2006-01-02T15:04:05-07:00:00",
 	"2006-01-02T15:04:05:-0700",
+	"2006-01-02T15:04:05:00",
 	"2006-01-02T15:04:05Z",
+	"2006-1-02T15:04:05Z",
 	"2006-1-2 15:04:05",
 	"2006-1-2",
+	"2006/01/02",
 	"6-1-2 15:04",
 	"6/1/2 15:04",
 	"Jan 02 2006 03:04:05PM",
 	"Jan 2, 2006 15:04:05 MST",
 	"Jan 2, 2006 3:04:05 PM MST",
 	"January 02, 2006 03:04 PM",
+	"January 02, 2006 15:04",
 	"January 02, 2006 15:04:05 MST",
 	"January 02, 2006",
 	"January 2, 2006 03:04 PM",
 	"January 2, 2006 15:04:05 MST",
 	"January 2, 2006 15:04:05",
+	"January 2, 2006",
+	"January 2, 2006, 3:04 p.m.",
 	"Mon 02 Jan 2006 15:04:05 -0700",
 	"Mon 2 Jan 2006 15:04:05 MST",
+	"Mon Jan 2 15:04 2006",
 	"Mon Jan 2 15:04:05 2006 MST",
 	"Mon, 02 Jan 06 15:04:05 MST",
 	"Mon, 02 Jan 2006 15:04 -0700",
@@ -200,6 +212,7 @@ var dateFormats = []string{
 	"Mon, 02 Jan 2006 15:04:05 -07",
 	"Mon, 02 Jan 2006 15:04:05 -0700",
 	"Mon, 02 Jan 2006 15:04:05 -07:00",
+	"Mon, 02 Jan 2006 15:04:05 00",
 	"Mon, 02 Jan 2006 15:04:05 MST -0700",
 	"Mon, 02 Jan 2006 15:04:05 MST",
 	"Mon, 02 Jan 2006 15:04:05 MST-07:00",
@@ -214,11 +227,13 @@ var dateFormats = []string{
 	"Mon, 2 Jan 06 15:04:05 MST",
 	"Mon, 2 Jan 15:04:05 MST",
 	"Mon, 2 Jan 2006 15:04",
+	"Mon, 2 Jan 2006 15:04:05 -0700 MST",
 	"Mon, 2 Jan 2006 15:04:05 -0700",
 	"Mon, 2 Jan 2006 15:04:05 MST",
 	"Mon, 2 Jan 2006 15:04:05 UT",
 	"Mon, 2 Jan 2006 15:04:05",
 	"Mon, 2 Jan 2006 15:04:05-0700",
+	"Mon, 2 Jan 2006 15:04:05MST",
 	"Mon, 2 Jan 2006 15:4:5 MST",
 	"Mon, 2 Jan 2006",
 	"Mon, 2 Jan 2006, 15:04 -0700",
@@ -226,6 +241,7 @@ var dateFormats = []string{
 	"Mon, 2 January 2006 15:04:05 MST",
 	"Mon, 2 January 2006, 15:04 -0700",
 	"Mon, 2 January 2006, 15:04:05 MST",
+	"Mon, 2, Jan 2006 15:4",
 	"Mon, Jan 2 2006 15:04:05 -0700",
 	"Mon, Jan 2 2006 15:04:05 -700",
 	"Mon, January 02, 2006, 15:04:05 MST",
@@ -234,6 +250,7 @@ var dateFormats = []string{
 	"Mon,02 January 2006 14:04:05 MST",
 	"Monday, 02 January 2006 15:04:05 -0700",
 	"Monday, 02 January 2006 15:04:05 MST",
+	"Monday, 02 January 2006 15:04:05",
 	"Monday, 2 Jan 2006 15:04:05 -0700",
 	"Monday, 2 Jan 2006 15:04:05 MST",
 	"Monday, 2 January 2006 15:04:05 -0700",
@@ -241,6 +258,8 @@ var dateFormats = []string{
 	"Monday, January 02, 2006",
 	"Monday, January 2, 2006 03:04 PM",
 	"Monday, January 2, 2006 15:04:05 MST",
+	"Monday, January 2, 2006",
+	"Updated January 2, 2006",
 	"mon,2 Jan 2006 15:04:05 MST",
 	time.ANSIC,
 	time.RFC1123,
@@ -270,15 +289,11 @@ func parseDate(c appengine.Context, feed *Feed, ds ...string) (t time.Time, err 
 			Parent: gn.Key(feed),
 		})
 	}
-	err = errors.New(fmt.Sprintf("could not parse date: %v", strings.Join(ds, ", ")))
+	err = fmt.Errorf("could not parse date: %v", strings.Join(ds, ", "))
 	return
 }
 
 func ParseFeed(c appengine.Context, u string, b []byte) (*Feed, []*Story) {
-	if strings.TrimSpace(u) == "" {
-		c.Criticalf("badurl3: %v", u)
-		return nil, nil
-	}
 	f := Feed{Url: u}
 	var s []*Story
 
@@ -291,11 +306,9 @@ func ParseFeed(c appengine.Context, u string, b []byte) (*Feed, []*Story) {
 		if t, err := parseDate(c, &f, string(a.Updated)); err == nil {
 			f.Updated = t
 		}
-		for _, l := range a.Link {
-			if l.Rel != "self" {
-				f.Link = l.Href
-				break
-			}
+
+		if len(a.Link) > 0 {
+			f.Link = findBestAtomLink(c, a.Link).Href
 		}
 
 		for _, i := range a.Entry {
@@ -310,15 +323,19 @@ func ParseFeed(c appengine.Context, u string, b []byte) (*Feed, []*Story) {
 				st.Published = t
 			}
 			if len(i.Link) > 0 {
-				st.Link = i.Link[0].Href
+				st.Link = findBestAtomLink(c, i.Link).Href
 			}
 			if i.Author != nil {
 				st.Author = i.Author.Name
 			}
 			if i.Content != nil {
-				st.content, st.Summary = Sanitize(i.Content.Body)
+				if len(strings.TrimSpace(i.Content.Body)) != 0 {
+					st.content = i.Content.Body
+				} else if len(i.Content.InnerXML) != 0 {
+					st.content = i.Content.InnerXML
+				}
 			} else if i.Summary != nil {
-				st.content, st.Summary = Sanitize(i.Summary.Body)
+				st.content = i.Summary.Body
 			}
 			s = append(s, &st)
 		}
@@ -350,9 +367,9 @@ func ParseFeed(c appengine.Context, u string, b []byte) (*Feed, []*Story) {
 				i.Title = i.Description
 			}
 			if i.Content != "" {
-				st.content, st.Summary = Sanitize(i.Content)
+				st.content = i.Content
 			} else if i.Title != "" && i.Description != "" {
-				st.content, st.Summary = Sanitize(i.Description)
+				st.content = i.Description
 			}
 			if i.Guid != nil {
 				st.Id = i.Guid.Guid
@@ -387,7 +404,7 @@ func ParseFeed(c appengine.Context, u string, b []byte) (*Feed, []*Story) {
 				Link:   i.Link,
 				Author: i.Creator,
 			}
-			st.content, st.Summary = Sanitize(html.UnescapeString(i.Description))
+			st.content = html.UnescapeString(i.Description)
 			if t, err := parseDate(c, &f, i.Date); err == nil {
 				st.Published = t
 				st.Updated = t
@@ -404,6 +421,33 @@ func ParseFeed(c appengine.Context, u string, b []byte) (*Feed, []*Story) {
 	return nil, nil
 }
 
+func findBestAtomLink(c appengine.Context, links []atom.Link) atom.Link {
+	getScore := func(l atom.Link) int {
+		switch {
+		case l.Rel == "hub":
+			return 0
+		case l.Type == "text/html":
+			return 3
+		case l.Rel != "self":
+			return 2
+		default:
+			return 1
+		}
+	}
+
+	var bestlink atom.Link
+	bestscore := -1
+	for _, l := range links {
+		score := getScore(l)
+		if score > bestscore {
+			bestlink = l
+			bestscore = score
+		}
+	}
+
+	return bestlink
+}
+
 const UpdateTime = time.Hour * 3
 
 func parseFix(c appengine.Context, f *Feed, ss []*Story) (*Feed, []*Story) {
@@ -412,6 +456,16 @@ func parseFix(c appengine.Context, f *Feed, ss []*Story) (*Feed, []*Story) {
 	f.NextUpdate = f.Checked.Add(UpdateTime - time.Second*time.Duration(rand.Int63n(60*30)))
 	fk := g.Key(f)
 	f.Image = loadImage(c, f)
+
+	if u, err := url.Parse(f.Url); err == nil {
+		if ul, err := u.Parse(f.Link); err == nil {
+			f.Link = ul.String()
+		}
+	}
+	base, err := url.Parse(f.Link)
+	if err != nil {
+		c.Warningf("unable to parse link: %v", f.Link)
+	}
 
 	for _, s := range ss {
 		s.Parent = fk
@@ -437,16 +491,32 @@ func parseFix(c appengine.Context, f *Feed, ss []*Story) (*Feed, []*Story) {
 				return nil, nil
 			}
 		}
-		const keySize = 499
-		if len(s.Id) > keySize { // datastore limits keys to 500 chars
-			s.Id = s.Id[:keySize]
-		}
 		// if a story doesn't have a link, see if its id is a URL
 		if s.Link == "" {
 			if u, err := url.Parse(s.Id); err == nil {
 				s.Link = u.String()
 			}
 		}
+		if base != nil && s.Link != "" {
+			link, err := base.Parse(s.Link)
+			if err == nil {
+				s.Link = link.String()
+			} else {
+				c.Warningf("unable to resolve link: %v", s.Link)
+			}
+		}
+		const keySize = 500
+		sk := g.Key(s)
+		if kl := len(sk.Encode()); kl > keySize {
+			c.Errorf("key too long: %v, %v, %v", kl, f.Url, s.Id)
+			return nil, nil
+		}
+		su, serr := url.Parse(s.Link)
+		if serr != nil {
+			su = &url.URL{}
+			s.Link = ""
+		}
+		s.content, s.Summary = Sanitize(s.content, su)
 	}
 
 	return f, ss

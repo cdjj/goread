@@ -53,6 +53,9 @@
 		.story-header.read .story-title strong {
 			font-weight: normal !important;
 		}
+		.story-link {
+			color: #333;
+		}
 		.feed-title, .folder-title {
 			padding: 2px;
 		}
@@ -116,6 +119,9 @@
 		}
 		#feed-list:hover {
 			overflow-y: auto;
+		}
+		.active {
+			color: #d14;
 		}
 		.feed-child {
 			margin-left: 20px;
@@ -274,17 +280,15 @@
 								<b class="caret"></b>
 							</a>
 							<ul class="dropdown-menu">
-								<li><a href="{{url "import-reader"}}">import google reader</a></li>
 								<li><a href="#" ng-click="setAddSubscription()">add subscription</a></li>
 								<li><a href="#" ng-click="shown = 'import-opml'">import opml</a></li>
 								<li class="divider"></li>
 								<li><a href="https://go-read.appspot.com/">goread over HTTPS</a></li>
 								<li><a href="{{url "export-opml"}}">export opml</a></li>
 								<li><a href="{{url "logout"}}">logout</a></li>
-								{{if .IsDev}}
-									<li class="divider"></li>
-									<li><a href="{{url "clear-feeds"}}">clear feeds</a></li>
-								{{end}}
+								<li class="divider"></li>
+								<li><a href="#" ng-click="clearFeeds()">clear feeds</a></li>
+								<li><a href="#" data-url="{{url "delete-account"}}" id="delete-account" ng-click="deleteAccount()">delete account</a></li>
 							</ul>
 						</li>
 					{{else}}
@@ -339,13 +343,14 @@
 					<li>
 						<button class="btn btn-primary" ng-click="setAddSubscription()">subscribe</button>
 					<li>
-					<li class="all-subs hand" ng-click="setActiveFeed()">
+					<li class="all-subs hand" ng-click="setActiveFeed()" ng-class="{active: !activeFeed && !activeFolder}" ng-hide="loading">
 						all items ({{`{{unread.all || 0}}`}})
 					</li>
+					<li class="all-subs" ng-show="loading">loading...</li>
 				</ul>
 				<ul class="unstyled" ui-sortable="sortableOptions" ng-model="feeds">
 					<li ng-repeat="f in feeds" ng-hide="shouldHideEmpty(f)">
-						<div class="hand feed-title" ng-hide="f.Outline" ng-click="setActiveFeed(f.XmlUrl)">
+						<div class="hand feed-title" ng-class="{active: activeFeed == f.XmlUrl}" ng-hide="f.Outline" ng-click="setActiveFeed(f.XmlUrl)">
 							<img {{htmlattr `ng-src="{{icons[f.XmlUrl] || '/static/img/feed.png'}}"`}} class="feed-icon">
 							<span ng-class="{bold: unread['feeds'][f.XmlUrl]}" ng-bind="f.Title"></span>
 							<span ng-show="unread['feeds'][f.XmlUrl]">
@@ -353,17 +358,17 @@
 							</span>
 						</div>
 						<div ng-show="f.Outline">
-							<div class="hand folder-title" ng-show="f.Outline">
-								<i class="icon-folder-open hand" ng-hide="opts.folderClose[f.Title]" ng-click="opts.folderClose[f.Title] = true; saveOpts()"></i>
-								<i class="icon-folder-close hand" ng-show="opts.folderClose[f.Title]" ng-click="opts.folderClose[f.Title] = false; saveOpts()"></i>
-								<span ng-class="{bold: unread['folders'][f.Title]}" ng-bind="f.Title" ng-click="setActiveFolder(f.Title)"></span>
+							<div class="hand folder-title" ng-class="{active: activeFolder == f.Title}" ng-show="f.Outline" ng-click="setActiveFolder(f.Title)">
+								<i class="icon-folder-open hand" ng-hide="opts.folderClose[f.Title]" ng-click="opts.folderClose[f.Title] = true; saveOpts(); $event.stopPropagation()"></i>
+								<i class="icon-folder-close hand" ng-show="opts.folderClose[f.Title]" ng-click="opts.folderClose[f.Title] = false; saveOpts(); $event.stopPropagation()"></i>
+								<span ng-class="{bold: unread['folders'][f.Title]}" ng-bind="f.Title"></span>
 								<span ng-show="unread['folders'][f.Title]">
 									({{`{{unread['folders'][f.Title]}}`}})
 								</span>
 							</div>
 							<ul class="unstyled" ng-hide="opts.folderClose[f.Title]" ui-sortable="sortableOptions" ng-model="f.Outline">
 								<li ng-repeat="o in f.Outline" ng-hide="shouldHideEmpty(o)">
-									<div class="hand feed-title feed-child" ng-click="setActiveFeed(o.XmlUrl)">
+									<div class="hand feed-title feed-child" ng-class="{active: activeFeed == o.XmlUrl}" ng-click="setActiveFeed(o.XmlUrl)">
 										<img {{htmlattr `ng-src="{{icons[o.XmlUrl] || '/static/img/feed.png'}}"`}} class="feed-icon hand">
 										<span ng-class="{bold: unread['feeds'][o.XmlUrl]}" ng-bind="o.Title"></span>
 										<span ng-show="unread['feeds'][o.XmlUrl]">
@@ -441,13 +446,13 @@
 				>
 					<div class="story-header hand" ng-class="{read: s.read}">
 						<div class="story-feed muted visible-desktop" ng-click="setCurrent($index, false, true)" ng-bind="s.feed.Title"></div>
-						<div class="story-title" ng-click="setCurrent($index, false, true)">
-							<strong ng-bind="s.Title"></strong>
-							<span class="story-summary muted" ng-show="s.Summary" ng-bind="'- ' + s.Summary"></span>
+						<div class="story-title">
+							<a ng-href="{{`{{s.Link}}`}}" ng-click="setCurrent($index, false, true, $event)" class="story-link"><strong ng-bind="s.Title"></strong></a>
+							<span class="story-summary muted" ng-click="setCurrent($index, false, true)" ng-show="s.Summary" ng-bind="'- ' + s.Summary"></span>
 						</div>
 						<div class="story-date muted visible-desktop">
 							<span ng-bind="s.dispdate" ng-click="setCurrent($index, false, true)"></span>
-							<a ng-href="{{`{{s.Link}}`}}" target="_blank"><i class="icon-share-alt"></i></a>
+							<a ng-href="{{`{{s.Link}}`}}" target="_blank" ng-click="setCurrent($index, false, true, null, true)"><i class="icon-share-alt"></i></a>
 						</div>
 					</div>
 					<div class="story-content" ng-click="setCurrent($index, true, true)" ng-show="$index == currentStory || opts.expanded" ng-class="{short: opts.nav}">
@@ -462,7 +467,12 @@
 				<div ng-show="loading == 0 && shown == 'feeds' && numfeeds && dispStories.length == 0" class="top-margin">
 					<div class="offset2 span8">
 						<div class="hero-unit">
-							<p class="text-center">No unread items.</p>
+							<p class="text-center" ng-show="!activeFeed && !activeFolder">Your reading list has no unread items.</p>
+							<p class="text-center" ng-show="activeFolder">You have no unread &quot;{{`{{activeFolder}}`}}&quot; items.</p>
+							<div ng-show="activeFeed">
+								<p class="text-center">&quot;{{`{{xmlurls[activeFeed].Title}}`}}&quot; has no unread iems.</p>
+								<p class="text-center"><a href="#" ng-click="setMode('all')"><small>View all items</small></a></p>
+							</div>
 						</div>
 					</div>
 				</div>
@@ -472,8 +482,7 @@
 		<div ng-show="nothing()" class="row-fluid top-margin">
 			<div class="offset2 span8">
 				<p>You don't have any feeds.</p>
-				<p>You should probably add some.</p>
-				<p><a href="{{url "import-reader"}}" class="btn btn-primary">Import from Google Reader</a></p>
+				<p>To import from Google Reader, <a href="https://www.google.com/takeout/?pli=1#custom:reader">download your reader takeout here</a>, then upload it in the <code>Upload OPML file</code> section below.</p>
 			</div>
 		</div>
 
@@ -496,6 +505,7 @@
 						<legend>Upload OPML file</legend>
 						<input type="file" name="file">
 						<p><button ng-click="importOpml()" type="submit" class="btn">upload</button></p>
+						<p>You can also upload your <a href="https://www.google.com/takeout/?pli=1#custom:reader">Google Reader takeout</a> file directly.</p>
 					</fieldset>
 				</form>
 			</div>
@@ -531,16 +541,18 @@
 							<div class="caption">
 								<h3>recent updates</h3>
 								<ul>
+									<li>07/03: improved OPML support; middle click story titles to open; fixed the &quot;no feeds show up&quot; bug; numerous bug fixes and tweaks</li>
+									<li>07/03: pubsubhubbub support (*much* faster feed updates)</li>
 									<li>07/01: feed and folder organization</li>
 									<li>06/29: sort by oldest; width-restricted stories; UI tweaks</li>
-									<li>06/28: support for users with > 1000 feeds</li>
+									<li>06/28: support for users with &gt; 1000 feeds</li>
 								</ul>
 							</div>
 						</div>
 					</li>
 				</ul>
 			</div>
-			<div class="row-fluid">
+			<div class="row-fluid hidden-phone">
 				<div class="offset1 span10">
 					<h2>Screenshot</h2>
 					<p class="text-center"><a href="/static/img/preview.png"><img class="img-polaroid" src="/static/img/preview.png" alt="screenshot"></a></p>

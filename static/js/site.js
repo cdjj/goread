@@ -90,18 +90,29 @@ goReadAppModule.controller('GoreadCtrl', function($scope, $http, $timeout, $wind
 		story.dispdate = moment(d).format(d.toDateString() == today ? "h:mm a" : "MMM D, YYYY");
 	};
 
+	$scope.clear = function() {
+		$scope.feeds = [];
+		$scope.numfeeds = 0;
+		$scope.stories = [];
+		$scope.unreadStories = {};
+		$scope.last = 0;
+		$scope.xmlurls = {};
+	};
+
+	$scope.update = function() {
+		$scope.updateUnread();
+		$scope.updateStories();
+		$scope.updateTitle();
+	};
+
 	$scope.refresh = function(cb) {
 		$scope.loading++;
 		$scope.shown = 'feeds';
 		delete $scope.currentStory;
 		$http.get($('#refresh').attr('data-url-feeds'))
 			.success(function(data) {
-				$scope.feeds = data.Opml || [];
-				$scope.numfeeds = 0;
-				$scope.stories = [];
-				$scope.unreadStories = {};
-				$scope.last = 0;
-				$scope.xmlurls = {};
+				$scope.clear();
+				$scope.feeds = data.Opml || $scope.feeds;
 				$scope.icons = data.Icons;
 				$scope.opts = data.Options ? JSON.parse(data.Options) : $scope.opts;
 
@@ -134,9 +145,7 @@ goReadAppModule.controller('GoreadCtrl', function($scope, $http, $timeout, $wind
 
 				if (typeof cb === 'function') cb();
 				$scope.loaded();
-				$scope.updateUnread();
-				$scope.updateStories();
-				$scope.updateTitle();
+				$scope.update();
 				setTimeout($scope.applyGetFeed);
 			})
 			.error(function() {
@@ -150,8 +159,12 @@ goReadAppModule.controller('GoreadCtrl', function($scope, $http, $timeout, $wind
 		document.title = 'go read' + (ur != 0 ? ' (' + ur + ')' : '');
 	};
 
-	$scope.setCurrent = function(i, noClose, isClick) {
-		if (!noClose && i == $scope.currentStory) {
+	$scope.setCurrent = function(i, noClose, isClick, $event, noOpen) {
+		var middleClick = $event && $event.which == 2;
+		if ($event && !middleClick) {
+			$event.preventDefault();
+		}
+		if (!middleClick && !noClose && i == $scope.currentStory) {
 			delete $scope.currentStory;
 			return;
 		}
@@ -172,7 +185,9 @@ goReadAppModule.controller('GoreadCtrl', function($scope, $http, $timeout, $wind
 				}
 			});
 		}
-		$scope.currentStory = i;
+		if (!middleClick && !noOpen) {
+			$scope.currentStory = i;
+		}
 		$scope.markAllRead(story);
 	};
 
@@ -193,10 +208,25 @@ goReadAppModule.controller('GoreadCtrl', function($scope, $http, $timeout, $wind
 		return cnt == 0;
 	};
 
-	$scope.next = function() {
+	$scope.next = function(page) {
 		if ($scope.dispStories && typeof $scope.currentStory === 'undefined') {
 			$scope.setCurrent(0);
-		} else if ($scope.dispStories && $scope.currentStory < $scope.dispStories.length - 1) {
+			return;
+		}
+		if (page) {
+			var sl = $('#story-list');
+			var sd = $('#storydiv' + $scope.currentStory);
+			var sh = sd.height();
+			var st = sd.position().top;
+			var sb = st + sh;
+			var slh = sl.height();
+			var slt = sl.scrollTop();
+			if (sb > slt + slh) {
+				sl.scrollTop(slt + slh - 20);
+				return;
+			}
+		}
+		if ($scope.dispStories && $scope.currentStory < $scope.dispStories.length - 1) {
 			$scope.setCurrent($scope.currentStory + 1);
 		}
 	};
@@ -268,9 +298,7 @@ goReadAppModule.controller('GoreadCtrl', function($scope, $http, $timeout, $wind
 			}
 		}
 
-		$scope.updateUnread();
-		$scope.updateStories();
-		$scope.updateTitle();
+		$scope.update();
 
 		if (!unread)
 			$scope.http('POST', $('#mark-all-read').attr('data-url'), { last: $scope.last });
@@ -364,7 +392,9 @@ goReadAppModule.controller('GoreadCtrl', function($scope, $http, $timeout, $wind
 					current = $scope.dispStories[$scope.currentStory].guid;
 				}
 				for (var i = 0; i < data.length; i++) {
-					$scope.contents[tofetch[i].guid] = data[i];
+					var d = $('<div>' + data[i] + '</div>');
+					$('a', d).attr('target', '_blank');
+					$scope.contents[tofetch[i].guid] = d;
 				}
 			});
 	};
@@ -462,14 +492,22 @@ goReadAppModule.controller('GoreadCtrl', function($scope, $http, $timeout, $wind
 	$scope.renameFolder = function(folder) {
 		var name = prompt('Rename to');
 		if (!name) return;
+		var src, dst;
 		for (var i = 0; i < $scope.feeds.length; i++) {
 			var f = $scope.feeds[i];
-			if (f.Outline && f.Title == folder) {
-				f.Title = name;
-				$scope.activeFolder = name;
-				break;
+			if (f.Outline) {
+				if (f.Title == folder) src = f;
+				else if (f.Title == name) dst = f;
 			}
 		}
+		if (!dst) {
+			src.Title = name;
+		} else {
+			dst.Outline.push.apply(dst.Outline, src.Outline);
+			var i = $scope.feeds.indexOf(src);
+			$scope.feeds.splice(i, 1);
+		}
+		$scope.activeFolder = name;
 		$scope.uploadOpml();
 	};
 
@@ -518,12 +556,14 @@ goReadAppModule.controller('GoreadCtrl', function($scope, $http, $timeout, $wind
 	$scope.moveFeed = function(url, folder) {
 		var feed;
 		var found = false;
-		for (var i = 0; i < $scope.feeds.length; i++) {
+		for (var i = $scope.feeds.length - 1; i >= 0; i--) {
 			var f = $scope.feeds[i];
 			if (f.Outline) {
 				for (var j = 0; j < f.Outline.length; j++) {
 					var o = f.Outline[j];
 					if (o.XmlUrl == url) {
+						if (f.Title == folder)
+							return;
 						feed = f.Outline[j];
 						f.Outline.splice(j, 1);
 						if (!f.Outline.length)
@@ -534,6 +574,8 @@ goReadAppModule.controller('GoreadCtrl', function($scope, $http, $timeout, $wind
 				if (f.Title == folder)
 					found = true;
 			} else if (f.XmlUrl == url) {
+				if (!folder)
+					return;
 				feed = f;
 				$scope.feeds.splice(i, 1)
 			}
@@ -564,9 +606,13 @@ goReadAppModule.controller('GoreadCtrl', function($scope, $http, $timeout, $wind
 		$scope.moveFeed(url, folder);
 	};
 
+	var prevOpml;
 	$scope.uploadOpml = function() {
+		var opml = JSON.stringify($scope.feeds);
+		if (opml == prevOpml) return;
+		prevOpml = opml;
 		$scope.http('POST', $('#story-list').attr('data-url-upload'), {
-			opml: JSON.stringify($scope.feeds)
+			opml: opml
 		});
 	};
 
@@ -645,28 +691,50 @@ goReadAppModule.controller('GoreadCtrl', function($scope, $http, $timeout, $wind
 		});
 	};
 
+	$scope.clearFeeds = function() {
+		if (!confirm('Remove all folders and subscriptions?')) return;
+		$scope.clear();
+		$scope.uploadOpml();
+		$scope.update();
+	};
+
+	$scope.deleteAccount = function() {
+		if (!confirm('Delete your account?')) return;
+		window.location.href = $('#delete-account').attr('data-url');
+	};
+
 	var shortcuts = $('#shortcuts');
 	Mousetrap.bind('?', function() {
 		shortcuts.modal('toggle');
+		return false;
 	});
 	Mousetrap.bind('esc', function() {
 		shortcuts.modal('hide');
+		return false;
 	});
 	Mousetrap.bind('r', function() {
 		if ($scope.nouser) {
 			return;
 		}
 		$scope.$apply($scope.refresh());
+		return false;
 	});
-	Mousetrap.bind(['j', 'n', 'space'], function() {
+	Mousetrap.bind(['j', 'n'], function() {
 		$scope.$apply('next()');
+		return false;
+	});
+	Mousetrap.bind('space', function() {
+		$scope.$apply('next(true)');
+		return false;
 	});
 	Mousetrap.bind(['k', 'p', 'shift+space'], function() {
 		$scope.$apply('prev()');
+		return false;
 	});
 	Mousetrap.bind('v', function() {
 		if ($scope.dispStories[$scope.currentStory]) {
 			window.open($scope.dispStories[$scope.currentStory].Link);
+			return false;
 		}
 	});
 	Mousetrap.bind('shift+a', function() {
@@ -674,27 +742,33 @@ goReadAppModule.controller('GoreadCtrl', function($scope, $http, $timeout, $wind
 			return;
 		}
 		$scope.$apply($scope.markAllRead());
+		return false;
 	});
 	Mousetrap.bind('a', function() {
 		if ($scope.nouser) {
 			return;
 		}
 		$scope.$apply("setAddSubscription()");
+		return false;
 	});
 	Mousetrap.bind('g a', function() {
 		if ($scope.nouser) {
 			return;
 		}
 		$scope.$apply("shown = 'feeds'; setActiveFeed();");
+		return false;
 	});
 	Mousetrap.bind('u', function() {
 		$scope.$apply("toggleNav()");
+		return false;
 	});
 	Mousetrap.bind('1', function() {
 		$scope.$apply("setExpanded(true)");
+		return false;
 	});
 	Mousetrap.bind('2', function() {
 		$scope.$apply("setExpanded(false)");
+		return false;
 	});
 
 	$scope.showMessage = function(m) {

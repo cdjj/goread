@@ -18,15 +18,20 @@ package goapp
 
 import (
 	"appengine"
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"appengine/blobstore"
 	"appengine/datastore"
@@ -79,6 +84,21 @@ func ImportOpml(c mpg.Context, w http.ResponseWriter, r *http.Request) {
 
 	if file, _, err := r.FormFile("file"); err == nil {
 		if fdata, err := ioutil.ReadAll(file); err == nil {
+			buf := bytes.NewReader(fdata)
+			// attempt to extract from google reader takeout zip
+			if zb, zerr := zip.NewReader(buf, int64(len(fdata))); zerr == nil {
+				for _, f := range zb.File {
+					if strings.HasSuffix(f.FileHeader.Name, "Reader/subscriptions.xml") {
+						if rc, rerr := f.Open(); rerr == nil {
+							if fb, ferr := ioutil.ReadAll(rc); ferr == nil {
+								fdata = fb
+								break
+							}
+						}
+					}
+				}
+			}
+
 			bk, err := saveFile(c, fdata)
 			if err != nil {
 				serveError(w, err)
@@ -112,6 +132,9 @@ func AddSubscription(c mpg.Context, w http.ResponseWriter, r *http.Request) {
 	gn.Get(&ud)
 	mergeUserOpml(&ud, o)
 	gn.Put(&ud)
+	if r.Method == "GET" {
+		http.Redirect(w, r, routeUrl("main"), http.StatusFound)
+	}
 }
 
 func ImportReader(c mpg.Context, w http.ResponseWriter, r *http.Request) {
@@ -262,6 +285,7 @@ func ListFeeds(c mpg.Context, w http.ResponseWriter, r *http.Request) {
 						c.Warningf("manual feed update: %v", f.Url)
 					}
 				}
+				f.Subscribe(c)
 				lock.Lock()
 				fl[f.Url] = newStories
 				if len(newStories) > 0 {
@@ -305,7 +329,7 @@ func ListFeeds(c mpg.Context, w http.ResponseWriter, r *http.Request) {
 		gn.Put(ud)
 	}
 	c.Step("json marshal", func() {
-		b, _ := json.Marshal(struct {
+		o := struct {
 			Opml    []*OpmlOutline
 			Stories map[string][]*Story
 			Icons   map[string]string
@@ -315,9 +339,36 @@ func ListFeeds(c mpg.Context, w http.ResponseWriter, r *http.Request) {
 			Stories: fl,
 			Icons:   icons,
 			Options: u.Options,
-		})
+		}
+		b, err := json.Marshal(o)
+		if err != nil {
+			c.Errorf("cleaning")
+			for _, v := range fl {
+				for _, s := range v {
+					n := cleanNonUTF8(s.Summary)
+					if n != s.Summary {
+						s.Summary = n
+						c.Errorf("cleaned %v", s.Id)
+						gn.Put(s)
+					}
+				}
+			}
+			b, _ = json.Marshal(o)
+		}
 		w.Write(b)
 	})
+	_ = utf8.RuneError
+}
+
+func cleanNonUTF8(s string) string {
+	b := &bytes.Buffer{}
+	for i := 0; i < len(s); i++ {
+		c, size := utf8.DecodeRuneInString(s[i:])
+		if c != utf8.RuneError || size != 1 {
+			b.WriteRune(c)
+		}
+	}
+	return b.String()
 }
 
 func MarkRead(c mpg.Context, w http.ResponseWriter, r *http.Request) {
@@ -464,7 +515,7 @@ func ExportOpml(c mpg.Context, w http.ResponseWriter, r *http.Request) {
 	gn.Get(&ud)
 	opml := Opml{}
 	json.Unmarshal(ud.Opml, &opml)
-	b, _ := xml.Marshal(&opml)
+	b, _ := xml.MarshalIndent(&opml, "", "\t")
 	w.Header().Add("Content-Type", "text/xml")
 	w.Header().Add("Content-Disposition", "attachment; filename=subscriptions.opml")
 	fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>`, string(b))
@@ -506,11 +557,11 @@ func SaveOptions(c mpg.Context, w http.ResponseWriter, r *http.Request) {
 
 func GetFeed(c mpg.Context, w http.ResponseWriter, r *http.Request) {
 	gn := goon.FromContext(c)
-	f := Feed{Url: r.URL.Query().Get("f")}
+	f := Feed{Url: r.FormValue("f")}
 	fk := gn.Key(&f)
 	q := datastore.NewQuery(gn.Key(&Story{}).Kind()).Ancestor(fk).KeysOnly()
 	q = q.Order("-p")
-	if c := r.URL.Query().Get("c"); c != "" {
+	if c := r.FormValue("c"); c != "" {
 		if dc, err := datastore.DecodeCursor(c); err == nil {
 			q = q.Start(dc)
 		}
@@ -541,4 +592,18 @@ func GetFeed(c mpg.Context, w http.ResponseWriter, r *http.Request) {
 		Stories: stories,
 	})
 	w.Write(b)
+}
+
+func DeleteAccount(c mpg.Context, w http.ResponseWriter, r *http.Request) {
+	cu := user.Current(c)
+	gn := goon.FromContext(c)
+	u := User{Id: cu.ID}
+	ud := UserData{Id: "data", Parent: gn.Key(&u)}
+	if err := gn.Get(&u); err != nil {
+		serveError(w, err)
+		return
+	}
+	gn.Delete(gn.Key(&ud))
+	gn.Delete(ud.Parent)
+	http.Redirect(w, r, routeUrl("logout"), http.StatusFound)
 }

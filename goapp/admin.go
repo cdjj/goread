@@ -67,7 +67,7 @@ func AllFeeds(c mpg.Context, w http.ResponseWriter, r *http.Request) {
 
 func AdminFeed(c mpg.Context, w http.ResponseWriter, r *http.Request) {
 	gn := goon.FromContext(c)
-	f := Feed{Url: r.URL.Query().Get("f")}
+	f := Feed{Url: r.FormValue("f")}
 	gn.Get(&f)
 	q := datastore.NewQuery(gn.Key(&Story{}).Kind()).KeysOnly()
 	fk := gn.Key(&f)
@@ -83,6 +83,7 @@ func AdminFeed(c mpg.Context, w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	gn.GetMulti(stories)
+	f.Subscribe(c)
 
 	templates.ExecuteTemplate(w, "admin-feed.html", struct {
 		Feed    *Feed
@@ -96,7 +97,7 @@ func AdminFeed(c mpg.Context, w http.ResponseWriter, r *http.Request) {
 }
 
 func AdminUpdateFeed(c mpg.Context, w http.ResponseWriter, r *http.Request) {
-	url := r.URL.Query().Get("f")
+	url := r.FormValue("f")
 	if feed, stories := fetchFeed(c, url, url); feed != nil {
 		updateFeed(c, url, feed, stories)
 		fmt.Fprintf(w, "updated: %v", url)

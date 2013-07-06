@@ -18,15 +18,16 @@ package goapp
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
-	"strings"
+	"net/url"
 	"time"
 
+	"appengine"
 	"appengine/datastore"
+	"appengine_internal"
 	"github.com/MiniProfiler/go/miniprofiler"
 	mpg "github.com/MiniProfiler/go/miniprofiler_gae"
 	"github.com/gorilla/mux"
@@ -58,8 +59,11 @@ func init() {
 	router.Handle("/tasks/import-reader", mpg.NewHandler(ImportReaderTask)).Name("import-reader-task")
 	router.Handle("/tasks/update-feed", mpg.NewHandler(UpdateFeed)).Name("update-feed")
 	router.Handle("/tasks/update-feeds", mpg.NewHandler(UpdateFeeds)).Name("update-feeds")
+	router.Handle("/tasks/subscribe-feed", mpg.NewHandler(SubscribeFeed)).Name("subscribe-feed")
+	router.Handle("/push/{feed}", mpg.NewHandler(SubscribeCallback)).Name("subscribe-callback")
 	router.Handle("/user/add-subscription", mpg.NewHandler(AddSubscription)).Name("add-subscription")
 	router.Handle("/user/clear-feeds", mpg.NewHandler(ClearFeeds)).Name("clear-feeds")
+	router.Handle("/user/delete-account", mpg.NewHandler(DeleteAccount)).Name("delete-account")
 	router.Handle("/user/export-opml", mpg.NewHandler(ExportOpml)).Name("export-opml")
 	router.Handle("/user/get-contents", mpg.NewHandler(GetContents)).Name("get-contents")
 	router.Handle("/user/get-feed", mpg.NewHandler(GetFeed)).Name("get-feed")
@@ -97,20 +101,22 @@ func addFeed(c mpg.Context, userid string, outline *OpmlOutline) error {
 	gn := goon.FromContext(c)
 	o := outline.Outline[0]
 	c.Infof("adding feed %v to user %s", o.XmlUrl, userid)
+	fu, ferr := url.Parse(o.XmlUrl)
+	if ferr != nil {
+		return ferr
+	}
+	fu.Fragment = ""
+	o.XmlUrl = fu.String()
 
 	f := Feed{Url: o.XmlUrl}
 	if err := gn.Get(&f); err == datastore.ErrNoSuchEntity {
 		if feed, stories := fetchFeed(c, o.XmlUrl, o.XmlUrl); feed == nil {
-			return errors.New(fmt.Sprintf("could not add feed %s", o.XmlUrl))
+			return fmt.Errorf("could not add feed %s", o.XmlUrl)
 		} else {
 			f = *feed
 			f.Updated = time.Time{}
 			f.Checked = f.Updated
 			f.NextUpdate = f.Updated
-			if strings.TrimSpace(f.Url) == "" {
-				c.Criticalf("badurl4: %v, %v", o.XmlUrl, o)
-				return errors.New("badurl4")
-			}
 			gn.Put(&f)
 			if err := updateFeed(c, f.Url, feed, stories); err != nil {
 				return err
@@ -188,4 +194,32 @@ func mergeUserOpml(ud *UserData, outlines ...*OpmlOutline) {
 	}
 
 	ud.Opml, _ = json.Marshal(&fs)
+}
+
+// Below is from David Symonds; will be in next app engine release
+
+// Timeout returns a replacement context that uses d as the default API RPC timeout.
+func Timeout(c appengine.Context, d time.Duration) appengine.Context {
+	return &timeoutContext{
+		Context: c,
+		d:       d,
+	}
+}
+
+type timeoutContext struct {
+	appengine.Context
+	d time.Duration
+}
+
+func (t *timeoutContext) Call(service, method string, in, out appengine_internal.ProtoMessage, opts *appengine_internal.CallOptions) error {
+	// Only affect calls that don't have a timeout.
+	if opts == nil || opts.Timeout == 0 {
+		newOpts := new(appengine_internal.CallOptions)
+		if opts != nil {
+			*newOpts = *opts
+		}
+		newOpts.Timeout = t.d
+		opts = newOpts
+	}
+	return t.Context.Call(service, method, in, out, opts)
 }
