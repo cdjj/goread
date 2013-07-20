@@ -72,8 +72,8 @@ func AdminFeed(c mpg.Context, w http.ResponseWriter, r *http.Request) {
 	q := datastore.NewQuery(gn.Key(&Story{}).Kind()).KeysOnly()
 	fk := gn.Key(&f)
 	q = q.Ancestor(fk)
-	q = q.Filter("p >", time.Now().Add(time.Hour*-48))
-	q = q.Order("-p")
+	q = q.Limit(100)
+	q = q.Order("-" + IDX_COL)
 	keys, _ := gn.GetAll(q, nil)
 	stories := make([]*Story, len(keys))
 	for j, key := range keys {
@@ -99,7 +99,7 @@ func AdminFeed(c mpg.Context, w http.ResponseWriter, r *http.Request) {
 func AdminUpdateFeed(c mpg.Context, w http.ResponseWriter, r *http.Request) {
 	url := r.FormValue("f")
 	if feed, stories := fetchFeed(c, url, url); feed != nil {
-		updateFeed(c, url, feed, stories)
+		updateFeed(c, url, feed, stories, true)
 		fmt.Fprintf(w, "updated: %v", url)
 	} else {
 		fmt.Fprintf(w, "error updating: %v", url)

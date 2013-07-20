@@ -17,7 +17,10 @@
 package goapp
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/base64"
+	"io/ioutil"
 	"net/url"
 	"time"
 
@@ -33,7 +36,14 @@ type User struct {
 	Messages []string  `datastore:"m,noindex"`
 	Read     time.Time `datastore:"r,noindex"`
 	Options  string    `datastore:"o,noindex"`
+	Account  int       `datastore:"a,noindex"`
 }
+
+const (
+	AFree = iota
+	ADev
+	APaid
+)
 
 func (u *User) String() string {
 	return u.Email
@@ -48,20 +58,25 @@ type UserData struct {
 	Read   []byte         `datastore:"r,noindex"`
 }
 
-type Read map[string][]string
+type readStory struct {
+	Feed, Story string
+}
+
+type Read map[readStory]bool
 
 type Feed struct {
-	_kind      string    `goon:"kind,F"`
-	Url        string    `datastore:"-" goon:"id"`
-	Title      string    `datastore:"t,noindex"`
-	Updated    time.Time `datastore:"u,noindex"`
-	Date       time.Time `datastore:"d,noindex"`
-	Checked    time.Time `datastore:"c,noindex"`
-	NextUpdate time.Time `datastore:"n"`
-	Link       string    `datastore:"l,noindex"`
-	Errors     int       `datastore:"e,noindex"`
-	Image      string    `datastore:"i,noindex"`
-	Subscribed time.Time `datastore:"s,noindex"`
+	_kind      string        `goon:"kind,F"`
+	Url        string        `datastore:"-" goon:"id"`
+	Title      string        `datastore:"t,noindex"`
+	Updated    time.Time     `datastore:"u,noindex"`
+	Date       time.Time     `datastore:"d,noindex"`
+	Checked    time.Time     `datastore:"c,noindex"`
+	NextUpdate time.Time     `datastore:"n"`
+	Link       string        `datastore:"l,noindex"`
+	Errors     int           `datastore:"e,noindex"`
+	Image      string        `datastore:"i,noindex"`
+	Subscribed time.Time     `datastore:"s,noindex"`
+	Average    time.Duration `datastore:"a,noindex"`
 }
 
 func (f Feed) Subscribe(c appengine.Context) {
@@ -91,33 +106,50 @@ func (f Feed) PubSubURL() string {
 
 // parent: Feed, key: story ID
 type Story struct {
-	_kind     string         `goon:"kind,S"`
-	Id        string         `datastore:"-" goon:"id"`
-	Parent    *datastore.Key `datastore:"-" goon:"parent" json:"-"`
-	Title     string         `datastore:"t,noindex"`
-	Link      string         `datastore:"l,noindex"`
-	Created   time.Time      `datastore:"c,noindex" json:"-"`
-	Published time.Time      `datastore:"p" json:"-"`
-	Updated   time.Time      `datastore:"u,noindex" json:"-"`
-	Date      int64          `datastore:"e,noindex"`
-	Author    string         `datastore:"a,noindex"`
-	Summary   string         `datastore:"s,noindex"`
+	_kind        string         `goon:"kind,S"`
+	Id           string         `datastore:"-" goon:"id"`
+	Parent       *datastore.Key `datastore:"-" goon:"parent" json:"-"`
+	Title        string         `datastore:"t,noindex"`
+	Link         string         `datastore:"l,noindex"`
+	Created      time.Time      `datastore:"c" json:"-"`
+	Published    time.Time      `datastore:"p,noindex" json:"-"`
+	Updated      time.Time      `datastore:"u,noindex" json:"-"`
+	Date         int64          `datastore:"e,noindex"`
+	Author       string         `datastore:"a,noindex" json:",omitempty"`
+	Summary      string         `datastore:"s,noindex"`
+	MediaContent string         `datastore:"m,noindex" json:",omitempty"`
 
 	content string
 }
 
+const IDX_COL = "c"
+
 // parent: Story, key: 1
 type StoryContent struct {
-	_kind   string         `goon:"kind,SC"`
-	Id      int64          `datastore:"-" goon:"id"`
-	Parent  *datastore.Key `datastore:"-" goon:"parent"`
-	Content string         `datastore:"c,noindex"`
+	_kind      string         `goon:"kind,SC"`
+	Id         int64          `datastore:"-" goon:"id"`
+	Parent     *datastore.Key `datastore:"-" goon:"parent"`
+	Content    string         `datastore:"c,noindex"`
+	Compressed []byte         `datastore:"z,noindex"`
+}
+
+func (sc *StoryContent) content() string {
+	if len(sc.Compressed) > 0 {
+		buf := bytes.NewReader(sc.Compressed)
+		if gz, err := gzip.NewReader(buf); err == nil {
+			defer gz.Close()
+			if b, _ := ioutil.ReadAll(gz); err == nil {
+				return string(b)
+			}
+		}
+	}
+	return sc.Content
 }
 
 type OpmlOutline struct {
 	Outline []*OpmlOutline `xml:"outline" json:",omitempty"`
 	Title   string         `xml:"title,attr,omitempty" json:",omitempty"`
-	XmlUrl  string         `xml:"xmlUrl,attr" json:",omitempty"`
+	XmlUrl  string         `xml:"xmlUrl,attr,omitempty" json:",omitempty"`
 	Type    string         `xml:"type,attr,omitempty" json:",omitempty"`
 	Text    string         `xml:"text,attr,omitempty" json:",omitempty"`
 	HtmlUrl string         `xml:"htmlUrl,attr,omitempty" json:",omitempty"`
@@ -126,6 +158,7 @@ type OpmlOutline struct {
 type Opml struct {
 	XMLName string         `xml:"opml"`
 	Version string         `xml:"version,attr"`
+	Title   string         `xml:"head>title"`
 	Outline []*OpmlOutline `xml:"body>outline"`
 }
 
@@ -140,3 +173,9 @@ type Image struct {
 	Blob appengine.BlobKey `datastore:"b,noindex"`
 	Url  string            `datastore:"u,noindex"`
 }
+
+type Stories []*Story
+
+func (s Stories) Len() int           { return len(s) }
+func (s Stories) Less(i, j int) bool { return s[i].Created.Before(s[j].Created) }
+func (s Stories) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }

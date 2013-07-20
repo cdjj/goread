@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"encoding/xml"
 	"fmt"
-	"goapp/atom"
 	"html"
 	"html/template"
 	"image"
@@ -43,7 +42,9 @@ import (
 	_ "code.google.com/p/go-charset/data"
 	mpg "github.com/MiniProfiler/go/miniprofiler_gae"
 	"github.com/mjibson/goon"
-	"github.com/mjibson/rssgo"
+	"goapp/atom"
+	"goapp/rdf"
+	"goapp/rss"
 )
 
 func serveError(w http.ResponseWriter, err error) {
@@ -64,6 +65,9 @@ type Includes struct {
 	GoogleAnalyticsHost string
 	IsDev               bool
 	IsAdmin             bool
+	StripeKey           string
+	StripePlans         []Plan
+	GoogleAd            template.HTML
 }
 
 var (
@@ -77,7 +81,7 @@ var (
 )
 
 func init() {
-	angular_ver := "1.0.5"
+	angular_ver := "1.0.7"
 	bootstrap_ver := "2.3.1"
 	jquery_ver := "1.9.1"
 	jqueryui_ver := "1.10.3"
@@ -113,6 +117,9 @@ func includes(c mpg.Context, w http.ResponseWriter, r *http.Request) *Includes {
 		GoogleAnalyticsId:   GOOGLE_ANALYTICS_ID,
 		GoogleAnalyticsHost: GOOGLE_ANALYTICS_HOST,
 		IsDev:               isDevServer,
+		StripeKey:           STRIPE_KEY,
+		StripePlans:         STRIPE_PLANS,
+		GoogleAd:            GOOGLE_AD,
 	}
 
 	if cu := user.Current(c); cu != nil {
@@ -126,6 +133,9 @@ func includes(c mpg.Context, w http.ResponseWriter, r *http.Request) *Includes {
 				i.Messages = user.Messages
 				user.Messages = nil
 				gn.Put(user)
+			}
+			if user.Account != AFree {
+				i.GoogleAd = ""
 			}
 
 			/*
@@ -298,7 +308,8 @@ func ParseFeed(c appengine.Context, u string, b []byte) (*Feed, []*Story) {
 	var s []*Story
 
 	a := atom.Feed{}
-	var atomerr, rsserr, rdferr error
+	var atomerr, rsserr, rdferr, err error
+	var fb, eb *url.URL
 	d := xml.NewDecoder(bytes.NewReader(b))
 	d.CharsetReader = charset.NewReader
 	if atomerr = d.Decode(&a); atomerr == nil {
@@ -307,11 +318,20 @@ func ParseFeed(c appengine.Context, u string, b []byte) (*Feed, []*Story) {
 			f.Updated = t
 		}
 
+		if fb, err = url.Parse(a.XMLBase); err != nil {
+			fb, _ = url.Parse("")
+		}
 		if len(a.Link) > 0 {
 			f.Link = findBestAtomLink(c, a.Link).Href
+			if l, err := fb.Parse(f.Link); err == nil {
+				f.Link = l.String()
+			}
 		}
 
 		for _, i := range a.Entry {
+			if eb, err = fb.Parse(i.XMLBase); err != nil {
+				eb = fb
+			}
 			st := Story{
 				Id:    i.ID,
 				Title: i.Title,
@@ -324,6 +344,9 @@ func ParseFeed(c appengine.Context, u string, b []byte) (*Feed, []*Story) {
 			}
 			if len(i.Link) > 0 {
 				st.Link = findBestAtomLink(c, i.Link).Href
+				if l, err := eb.Parse(st.Link); err == nil {
+					st.Link = l.String()
+				}
 			}
 			if i.Author != nil {
 				st.Author = i.Author.Name
@@ -343,7 +366,7 @@ func ParseFeed(c appengine.Context, u string, b []byte) (*Feed, []*Story) {
 		return parseFix(c, &f, s)
 	}
 
-	r := rssgo.Rss{}
+	r := rss.Rss{}
 	d = xml.NewDecoder(bytes.NewReader(b))
 	d.CharsetReader = charset.NewReader
 	d.DefaultSpace = "DefaultSpace"
@@ -374,6 +397,11 @@ func ParseFeed(c appengine.Context, u string, b []byte) (*Feed, []*Story) {
 			if i.Guid != nil {
 				st.Id = i.Guid.Guid
 			}
+			if i.Enclosure != nil && strings.HasPrefix(i.Enclosure.Type, "audio/") {
+				st.MediaContent = i.Enclosure.Url
+			} else if i.Media != nil && strings.HasPrefix(i.Media.Type, "audio/") {
+				st.MediaContent = i.Media.URL
+			}
 			if t, err := parseDate(c, &f, i.PubDate, i.Date, i.Published); err == nil {
 				st.Published = t
 				st.Updated = t
@@ -385,19 +413,19 @@ func ParseFeed(c appengine.Context, u string, b []byte) (*Feed, []*Story) {
 		return parseFix(c, &f, s)
 	}
 
-	rdf := RDF{}
+	rd := rdf.RDF{}
 	d = xml.NewDecoder(bytes.NewReader(b))
 	d.CharsetReader = charset.NewReader
-	if rdferr = d.Decode(&rdf); rdferr == nil {
-		if rdf.Channel != nil {
-			f.Title = rdf.Channel.Title
-			f.Link = rdf.Channel.Link
-			if t, err := parseDate(c, &f, rdf.Channel.Date); err == nil {
+	if rdferr = d.Decode(&rd); rdferr == nil {
+		if rd.Channel != nil {
+			f.Title = rd.Channel.Title
+			f.Link = rd.Channel.Link
+			if t, err := parseDate(c, &f, rd.Channel.Date); err == nil {
 				f.Updated = t
 			}
 		}
 
-		for _, i := range rdf.Item {
+		for _, i := range rd.Item {
 			st := Story{
 				Id:     i.About,
 				Title:  i.Title,
@@ -426,6 +454,8 @@ func findBestAtomLink(c appengine.Context, links []atom.Link) atom.Link {
 		switch {
 		case l.Rel == "hub":
 			return 0
+		case l.Rel == "alternate" && l.Type == "text/html":
+			return 4
 		case l.Type == "text/html":
 			return 3
 		case l.Rel != "self":
@@ -448,14 +478,13 @@ func findBestAtomLink(c appengine.Context, links []atom.Link) atom.Link {
 	return bestlink
 }
 
-const UpdateTime = time.Hour * 3
-
 func parseFix(c appengine.Context, f *Feed, ss []*Story) (*Feed, []*Story) {
 	g := goon.FromContext(c)
 	f.Checked = time.Now()
-	f.NextUpdate = f.Checked.Add(UpdateTime - time.Second*time.Duration(rand.Int63n(60*30)))
 	fk := g.Key(f)
 	f.Image = loadImage(c, f)
+	f.Link = strings.TrimSpace(f.Link)
+	f.Title = html.UnescapeString(f.Title)
 
 	if u, err := url.Parse(f.Url); err == nil {
 		if ul, err := u.Parse(f.Link); err == nil {
@@ -470,6 +499,7 @@ func parseFix(c appengine.Context, f *Feed, ss []*Story) (*Feed, []*Story) {
 	for _, s := range ss {
 		s.Parent = fk
 		s.Created = f.Checked
+		s.Link = strings.TrimSpace(s.Link)
 		if !s.Updated.IsZero() && s.Published.IsZero() {
 			s.Published = s.Updated
 		}
@@ -517,6 +547,7 @@ func parseFix(c appengine.Context, f *Feed, ss []*Story) (*Feed, []*Story) {
 			s.Link = ""
 		}
 		s.content, s.Summary = Sanitize(s.content, su)
+		s.Title = html.UnescapeString(s.Title)
 	}
 
 	return f, ss
@@ -575,4 +606,61 @@ func loadImage(c appengine.Context, f *Feed) string {
 	i.Url = su.String()
 	g.Put(i)
 	return i.Url
+}
+
+func updateAverage(f *Feed, previousUpdate time.Time, updateCount int) {
+	if previousUpdate.IsZero() || updateCount < 1 {
+		return
+	}
+
+	// if multiple updates occurred, assume they were evenly spaced
+	interval := time.Since(previousUpdate) / time.Duration(updateCount)
+
+	// rather than calculate a strict mean, we weight
+	// each new interval, gradually decaying the influence
+	// of older intervals
+	old := float64(f.Average) * (1.0 - NewIntervalWeight)
+	cur := float64(interval) * NewIntervalWeight
+	f.Average = time.Duration(old + cur)
+}
+
+func scheduleNextUpdate(f *Feed) {
+	now := time.Now()
+	if f.Date.IsZero() {
+		f.NextUpdate = now.Add(UpdateDefault)
+		return
+	}
+
+	// calculate the delay until next check based on average time between updates
+	pause := time.Duration(float64(f.Average) * UpdateFraction)
+
+	// if we have never found an update, start with a default wait time
+	if pause == 0 {
+		pause = UpdateDefault
+	}
+
+	// if it has been much longer than expected since the last update,
+	// gradually reduce the frequency of checks
+	since := time.Since(f.Date)
+	if since > pause*UpdateLongFactor {
+		pause = time.Duration(float64(since) / UpdateLongFactor)
+	}
+
+	// enforce some limits
+	if pause < UpdateMin {
+		pause = UpdateMin
+	}
+	if pause > UpdateMax {
+		pause = UpdateMax
+	}
+
+	// introduce a little random jitter to break up
+	// convoys of updates
+	jitter := time.Duration(rand.Int63n(int64(UpdateJitter)))
+	if rand.Intn(2) == 0 {
+		pause += jitter
+	} else {
+		pause -= jitter
+	}
+	f.NextUpdate = time.Now().Add(pause)
 }

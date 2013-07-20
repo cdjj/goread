@@ -27,6 +27,7 @@ import (
 
 	"appengine"
 	"appengine/datastore"
+	"appengine/user"
 	"appengine_internal"
 	"github.com/MiniProfiler/go/miniprofiler"
 	mpg "github.com/MiniProfiler/go/miniprofiler_gae"
@@ -43,6 +44,7 @@ func init() {
 	if templates, err = template.New("").Funcs(funcs).
 		ParseFiles(
 		"templates/base.html",
+		"templates/story.html",
 		"templates/admin-all-feeds.html",
 		"templates/admin-date-formats.html",
 		"templates/admin-feed.html",
@@ -54,13 +56,11 @@ func init() {
 	router.Handle("/", mpg.NewHandler(Main)).Name("main")
 	router.Handle("/login/google", mpg.NewHandler(LoginGoogle)).Name("login-google")
 	router.Handle("/logout", mpg.NewHandler(Logout)).Name("logout")
-	router.Handle("/oauth2callback", mpg.NewHandler(Oauth2Callback)).Name("oauth2callback")
+	router.Handle("/push/{feed}", mpg.NewHandler(SubscribeCallback)).Name("subscribe-callback")
 	router.Handle("/tasks/import-opml", mpg.NewHandler(ImportOpmlTask)).Name("import-opml-task")
-	router.Handle("/tasks/import-reader", mpg.NewHandler(ImportReaderTask)).Name("import-reader-task")
+	router.Handle("/tasks/subscribe-feed", mpg.NewHandler(SubscribeFeed)).Name("subscribe-feed")
 	router.Handle("/tasks/update-feed", mpg.NewHandler(UpdateFeed)).Name("update-feed")
 	router.Handle("/tasks/update-feeds", mpg.NewHandler(UpdateFeeds)).Name("update-feeds")
-	router.Handle("/tasks/subscribe-feed", mpg.NewHandler(SubscribeFeed)).Name("subscribe-feed")
-	router.Handle("/push/{feed}", mpg.NewHandler(SubscribeCallback)).Name("subscribe-callback")
 	router.Handle("/user/add-subscription", mpg.NewHandler(AddSubscription)).Name("add-subscription")
 	router.Handle("/user/clear-feeds", mpg.NewHandler(ClearFeeds)).Name("clear-feeds")
 	router.Handle("/user/delete-account", mpg.NewHandler(DeleteAccount)).Name("delete-account")
@@ -68,10 +68,10 @@ func init() {
 	router.Handle("/user/get-contents", mpg.NewHandler(GetContents)).Name("get-contents")
 	router.Handle("/user/get-feed", mpg.NewHandler(GetFeed)).Name("get-feed")
 	router.Handle("/user/import/opml", mpg.NewHandler(ImportOpml)).Name("import-opml")
-	router.Handle("/user/import/reader", mpg.NewHandler(ImportReader)).Name("import-reader")
 	router.Handle("/user/list-feeds", mpg.NewHandler(ListFeeds)).Name("list-feeds")
 	router.Handle("/user/mark-all-read", mpg.NewHandler(MarkAllRead)).Name("mark-all-read")
 	router.Handle("/user/mark-read", mpg.NewHandler(MarkRead)).Name("mark-read")
+	router.Handle("/user/mark-unread", mpg.NewHandler(MarkUnread)).Name("mark-unread")
 	router.Handle("/user/save-options", mpg.NewHandler(SaveOptions)).Name("save-options")
 	router.Handle("/user/upload-opml", mpg.NewHandler(UploadOpml)).Name("upload-opml")
 
@@ -83,6 +83,12 @@ func init() {
 	router.Handle("/admin/update-feed", mpg.NewHandler(AdminUpdateFeed)).Name("admin-update-feed")
 	router.Handle("/_ah/start", mpg.NewHandler(BackendStart))
 	router.Handle("/_ah/stop", mpg.NewHandler(BackendStop))
+	router.Handle("/tasks/cfixer", mpg.NewHandler(CFixer))
+	router.Handle("/tasks/cfix", mpg.NewHandler(CFix))
+	router.Handle("/user/charge", mpg.NewHandler(Charge)).Name("charge")
+	router.Handle("/user/donate", mpg.NewHandler(Donate)).Name("donate")
+	router.Handle("/user/account", mpg.NewHandler(Account)).Name("account")
+	router.Handle("/user/uncheckout", mpg.NewHandler(Uncheckout)).Name("uncheckout")
 
 	http.Handle("/", router)
 
@@ -92,8 +98,39 @@ func init() {
 }
 
 func Main(c mpg.Context, w http.ResponseWriter, r *http.Request) {
-	if err := templates.ExecuteTemplate(w, "base.html", includes(c, w, r)); err != nil {
+	feed := r.FormValue("f")
+	story := r.FormValue("s")
+	cu := user.Current(c)
+	if len(feed) == 0 || len(story) == 0 || cu != nil {
+		if err := templates.ExecuteTemplate(w, "base.html", includes(c, w, r)); err != nil {
+			c.Errorf("%v", err)
+			serveError(w, err)
+		}
+		return
+	}
+	gn := goon.FromContext(c)
+	f := &Feed{Url: feed}
+	s := &Story{Id: story, Parent: gn.Key(f)}
+	sc := &StoryContent{Id: 1, Parent: gn.Key(s)}
+	if err := gn.GetMulti([]interface{}{f, s, sc}); err != nil {
+		c.Errorf("%v", err)
 		serveError(w, err)
+		return
+	}
+	if err := templates.ExecuteTemplate(w, "story.html", struct {
+		Story   *Story
+		Feed    *Feed
+		Content template.HTML
+		Ad      template.HTML
+	}{
+		Story:   s,
+		Feed:    f,
+		Content: template.HTML(sc.content()),
+		Ad:      template.HTML(GOOGLE_AD),
+	}); err != nil {
+		c.Errorf("%v", err)
+		serveError(w, err)
+		return
 	}
 }
 
@@ -118,7 +155,10 @@ func addFeed(c mpg.Context, userid string, outline *OpmlOutline) error {
 			f.Checked = f.Updated
 			f.NextUpdate = f.Updated
 			gn.Put(&f)
-			if err := updateFeed(c, f.Url, feed, stories); err != nil {
+			for _, s := range stories {
+				s.Created = s.Published
+			}
+			if err := updateFeed(c, f.Url, feed, stories, false); err != nil {
 				return err
 			}
 
