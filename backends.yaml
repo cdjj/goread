@@ -1,4 +1,0 @@
-backends:
-- name: updater
-  class: B1
-  instances: 1
